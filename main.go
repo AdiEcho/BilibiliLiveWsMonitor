@@ -7,8 +7,12 @@ import (
 	"fmt"
 	"github.com/gorilla/websocket"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"io"
+	"io/ioutil"
 	"log"
+	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -27,6 +31,25 @@ func ZlibUnCompress(compressSrc []byte) []byte {
 	r, _ := zlib.NewReader(b)
 	_, _ = io.Copy(&out, r)
 	return out.Bytes()
+}
+
+func GetBody(roomid int64, key string) string {
+	//需要先导入bytes包
+	s1 := `{"uid":5555555,"roomid":1,"protover":2,"platform":"web","clientver":"2.1.7","type":2,"key":""}`
+	s2, _ := sjson.Set(s1, "roomid", roomid)
+	str, _ := sjson.Set(s2, "key", key)
+	//fmt.Println(str)
+	//roomId := strconv.FormatInt(roomid, 10)
+	//定义Buffer类型
+	//var bt bytes.Buffer
+	//bt.WriteString(s1)
+	//bt.WriteString(roomId)
+	//bt.WriteString(s2)
+	//bt.WriteString(key)
+	//bt.WriteString(s3)
+	//str := bt.String()
+	//fmt.Println(str)
+	return str
 }
 
 func GetHeader(strLen, opt uint32) []byte {
@@ -84,7 +107,7 @@ func HandleStrMsg(msg string) {
 	switch value {
 	case "DANMU_MSG", "WELCOME_GUARD", "ENTRY_EFFECT", "WELCOME", "SUPER_CHAT_MESSAGE", "SUPER_CHAT_MESSAGE_JPN",
 		"SUPER_CHAT_ENTRANCE", "SUPER_CHAT_MESSAGE_DELETE": // 弹幕消息、进房提示（姥爷舰长）、醒目留言
-		fmt.Println("弹幕类消息", msg)
+		//fmt.Println("弹幕类消息", msg)
 	case "INTERACT_WORD": // 进房提醒（普通用户）
 		//username := gjson.Get(msg, "data.uname").String()
 		//roomid := gjson.Get(msg, "data.roomid").String()
@@ -109,19 +132,20 @@ func HandleStrMsg(msg string) {
 		msgType := gjson.Get(msg, "msg_type").Uint()
 		switch msgType {
 		case 1, 6:
-			fmt.Println("无用消息", msg)
+			//fmt.Println("无用消息", msg)
 		case 2:
-			fmt.Println("醒目消息（送礼相关）", msg)
+			//fmt.Println("醒目消息（送礼相关）", msg)
 			//realRoomid := gjson.Get(msg, "real_roomid").Int()
 			//checkLotteryInfo(realRoomid)
 		case 3:
-			fmt.Println("醒目消息（舰长相关）", msg)
+			//fmt.Println("醒目消息（舰长相关）", msg)
 			//realRoomid := gjson.Get(msg, "real_roomid").Int()
 			//checkLotteryInfo(realRoomid)
 		default:
 			fmt.Println("msgType:", msgType, "  ", msg)
 		}
-
+	case "PK_BATTLE_PRE", "PK_BATTLE_START", "PK_BATTLE_PROCESS", "PK_BATTLE_SETTLE_USER",
+		"PK_BATTLE_SETTLE_V2", "PK_BATTLE_END", "PK_BATTLE_SETTLE": // pk相关
 	case "ACTIVITY_BANNER_UPDATE_V2", "ROOM_REAL_TIME_MESSAGE_UPDATE", "ROOM_BANNER", "PANEL",
 		"ONLINERANK", "ROOM_RANK", "ROOM_CHANGE", "HOUR_RANK_AWARDS", "ROOM_BLOCK_MSG",
 		"ROOM_SKIN_MSG", "GUARD_ACHIEVEMENT_ROOM", "HOT_ROOM_NOTIFY", "MATCH_TEAM_GIFT_RANK": // 排名变化、活动变化
@@ -132,7 +156,7 @@ func HandleStrMsg(msg string) {
 	}
 }
 
-func GetMsg(client *websocket.Conn) {
+func GetMsg(roomid int64, client *websocket.Conn) {
 	for {
 		_, message, err := client.ReadMessage()
 		if err != nil {
@@ -158,7 +182,8 @@ func GetMsg(client *websocket.Conn) {
 		case 8: // 心跳包回复
 			//msg := string(buff[16:])
 			//fmt.Println(msg)
-			fmt.Println("连接房间成功")
+			roomidStr := strconv.FormatInt(roomid, 10)
+			fmt.Println("连接房间", roomidStr, "成功")
 		}
 	}
 }
@@ -173,19 +198,52 @@ func HeartBeat(client *websocket.Conn) {
 	}
 }
 
-func main() {
+func ConnectRoom(roomid int64) {
 	client, _, err := websocket.DefaultDialer.Dial(WsUrl, nil)
+	//defer client.Close()
 	if err != nil {
 		log.Println("连接ws服务器失败", err)
+	} else {
+		key := GetToken(roomid)
+		strBody := GetBody(roomid, key)
+		strLen := uint32(len(strBody))
+		buf := GetHeader(strLen, 7)
+		b := BytesCombine(buf, []byte(strBody))
+		WriteErr := client.WriteMessage(websocket.BinaryMessage, b)
+		if WriteErr != nil {
+			log.Println("发送握手包失败", err)
+		} else {
+			go HeartBeat(client)
+			GetMsg(roomid, client)
+		}
 	}
-	defer client.Close()
+}
 
-	strBody := `{"roomid":1156962}`
-	strLen := uint32(len(strBody))
-	buf := GetHeader(strLen, 7)
-	b := BytesCombine(buf, []byte(strBody))
-	_ = client.WriteMessage(websocket.BinaryMessage, b)
+func GetToken(roomid int64) string {
+	roomId := strconv.FormatInt(roomid, 10)
+	url := "https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo?id=" + roomId
+	res, _ := http.Get(url)
+	defer res.Body.Close()
+	body, _ := ioutil.ReadAll(res.Body)
+	strBody := string(body)
+	token := gjson.Get(strBody, "data.token").String()
+	return token
+}
 
-	go HeartBeat(client)
-	GetMsg(client)
+func GetRecommendList() {
+	url := "https://api.live.bilibili.com/room/v3/area/getRoomList?parent_area_id=0&area_id=0&page=1&page_size=99"
+	res, _ := http.Get(url)
+	defer res.Body.Close()
+	body, _ := ioutil.ReadAll(res.Body)
+	strBody := string(body)
+	list := gjson.Get(strBody, "data.list").Array()
+	for _, v := range list {
+		roomid := v.Get("roomid").Int()
+		go ConnectRoom(roomid)
+	}
+}
+
+func main() {
+	GetRecommendList()
+	time.Sleep(time.Hour)
 }
