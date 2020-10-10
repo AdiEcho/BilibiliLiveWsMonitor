@@ -131,8 +131,6 @@ func HandleStrMsg(msg string) {
 	case "NOTICE_MSG": // 醒目消息（以前可以抽奖，所以单独分一个case出来）
 		msgType := gjson.Get(msg, "msg_type").Uint()
 		switch msgType {
-		case 1, 6:
-			//fmt.Println("无用消息", msg)
 		case 2:
 			//fmt.Println("醒目消息（送礼相关）", msg)
 			//realRoomid := gjson.Get(msg, "real_roomid").Int()
@@ -141,11 +139,9 @@ func HandleStrMsg(msg string) {
 			//fmt.Println("醒目消息（舰长相关）", msg)
 			//realRoomid := gjson.Get(msg, "real_roomid").Int()
 			//checkLotteryInfo(realRoomid)
-		default:
-			fmt.Println("msgType:", msgType, "  ", msg)
 		}
 	case "PK_BATTLE_PRE", "PK_BATTLE_START", "PK_BATTLE_PROCESS", "PK_BATTLE_SETTLE_USER",
-		"PK_BATTLE_SETTLE_V2", "PK_BATTLE_END", "PK_BATTLE_SETTLE": // pk相关
+		"PK_BATTLE_SETTLE_V2", "PK_BATTLE_END", "PK_BATTLE_SETTLE", "PK_BATTLE_RANK_CHANGE": // pk相关
 	case "ACTIVITY_BANNER_UPDATE_V2", "ROOM_REAL_TIME_MESSAGE_UPDATE", "ROOM_BANNER", "PANEL",
 		"ONLINERANK", "ROOM_RANK", "ROOM_CHANGE", "HOUR_RANK_AWARDS", "ROOM_BLOCK_MSG",
 		"ROOM_SKIN_MSG", "GUARD_ACHIEVEMENT_ROOM", "HOT_ROOM_NOTIFY", "MATCH_TEAM_GIFT_RANK": // 排名变化、活动变化
