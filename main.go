@@ -5,26 +5,34 @@ import (
 	"compress/zlib"
 	"encoding/binary"
 	"fmt"
-	"github.com/gorilla/websocket"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/gorilla/websocket"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 const headerLen = 16
-const WsUrl = "wss://broadcastlv.chat.bilibili.com:443/sub"
+//WsURL ws连接地址
+const WsURL = "wss://broadcastlv.chat.bilibili.com:443/sub"  
 
-// []byte合并操作
+
+// Monitor 监控结构体
+type Monitor struct{
+	roomid int64
+}
+
+// BytesCombine []byte合并操作
 func BytesCombine(pBytes ...[]byte) []byte {
 	return bytes.Join(pBytes, []byte(""))
 }
 
-// zlib解压数据
+// ZlibUnCompress zlib解压数据
 func ZlibUnCompress(compressSrc []byte) []byte {
 	b := bytes.NewReader(compressSrc)
 	var out bytes.Buffer
@@ -33,10 +41,11 @@ func ZlibUnCompress(compressSrc []byte) []byte {
 	return out.Bytes()
 }
 
-func GetBody(roomid int64, key string) string {
+// GetBody  获取初次握手包参数
+func (m Monitor) GetBody(key string) string {
 	//需要先导入bytes包
 	s1 := `{"uid":5555555,"roomid":1,"protover":2,"platform":"web","clientver":"2.1.7","type":2,"key":""}`
-	s2, _ := sjson.Set(s1, "roomid", roomid)
+	s2, _ := sjson.Set(s1, "roomid", m.roomid)
 	str, _ := sjson.Set(s2, "key", key)
 	//fmt.Println(str)
 	//roomId := strconv.FormatInt(roomid, 10)
@@ -52,6 +61,7 @@ func GetBody(roomid int64, key string) string {
 	return str
 }
 
+// GetHeader 获取tcp字节序
 func GetHeader(strLen, opt uint32) []byte {
 	buf := make([]byte, 16)
 	switch opt {
@@ -74,7 +84,8 @@ func GetHeader(strLen, opt uint32) []byte {
 	}
 }
 
-func HandleZlibMsg(buffer []byte, realLen uint32) {
+// HandleZlibMsg 处理zlib解压后的数据
+func (m Monitor) HandleZlibMsg(buffer []byte, realLen uint32) {
 	defer func() {
 		err := recover()
 		if err != nil {
@@ -86,28 +97,35 @@ func HandleZlibMsg(buffer []byte, realLen uint32) {
 	if bufferLen != realLen {
 		msg := string(buffer[headerLen:realLen])
 		//fmt.Println(msg)
-		go HandleStrMsg(msg)
+		go m.HandleStrMsg(msg)
 		newRealLen := binary.BigEndian.Uint32(buffer[realLen : realLen+16])
 		newBuffer := buffer[realLen:] // 新建一个buffer重新导入本函数
 		if newRealLen > uint32(len(newBuffer)) {
 			fmt.Println("不完整消息", string(newBuffer[headerLen:]))
 		} else {
-			HandleZlibMsg(newBuffer, newRealLen)
+			m.HandleZlibMsg(newBuffer, newRealLen)
 		}
 		buffer = []byte{} // 清空buffer以被gc（不确定是否可行，刚学不知道要怎么回收内存）
 	} else {
 		msg := string(buffer[headerLen:realLen])
 		//fmt.Println(msg)
-		HandleStrMsg(msg)
+		m.HandleStrMsg(msg)
 	}
 }
 
-func HandleStrMsg(msg string) {
+// HandleStrMsg 对消息进行分类处理
+func (m Monitor) HandleStrMsg(msg string) {
 	value := gjson.Get(msg, "cmd").String()
 	switch value {
-	case "DANMU_MSG", "WELCOME_GUARD", "ENTRY_EFFECT", "WELCOME", "SUPER_CHAT_MESSAGE", "SUPER_CHAT_MESSAGE_JPN",
+	case "DANMU_MSG":
+		InfoArray := gjson.Get(msg, "info").Array()
+		message := InfoArray[1].String()
+		username := InfoArray[2].Array()[1].String()
+		printMessage := "用户名：" + username + "\n" + message + "\n" + msg
+		fmt.Println(printMessage)
+	case "WELCOME_GUARD", "ENTRY_EFFECT", "WELCOME", "SUPER_CHAT_MESSAGE", "SUPER_CHAT_MESSAGE_JPN",
 		"SUPER_CHAT_ENTRANCE", "SUPER_CHAT_MESSAGE_DELETE": // 弹幕消息、进房提示（姥爷舰长）、醒目留言
-		//fmt.Println("弹幕类消息", msg)
+		fmt.Println("弹幕类消息", msg)
 	case "INTERACT_WORD": // 进房提醒（普通用户）
 		//username := gjson.Get(msg, "data.uname").String()
 		//roomid := gjson.Get(msg, "data.roomid").String()
@@ -152,7 +170,8 @@ func HandleStrMsg(msg string) {
 	}
 }
 
-func GetMsg(roomid int64, client *websocket.Conn) {
+// GetMsg 从ws连接获取信息
+func (m Monitor) GetMsg(client *websocket.Conn) {
 	for {
 		_, message, err := client.ReadMessage()
 		if err != nil {
@@ -168,22 +187,23 @@ func GetMsg(roomid int64, client *websocket.Conn) {
 			switch ProtocolVersion {
 			case 0:
 				msg := string(message[headerLen:])
-				HandleStrMsg(msg)
+				m.HandleStrMsg(msg)
 				//fmt.Println(msg)
 			case 2:
 				newBuff := ZlibUnCompress(message[headerLen:])
 				realLen := binary.BigEndian.Uint32(newBuff[:4]) // 一条消息的真实长度
-				HandleZlibMsg(newBuff, realLen)
+				m.HandleZlibMsg(newBuff, realLen)
 			}
 		case 8: // 心跳包回复
 			//msg := string(buff[16:])
 			//fmt.Println(msg)
-			roomidStr := strconv.FormatInt(roomid, 10)
+			roomidStr := strconv.FormatInt(m.roomid, 10)
 			fmt.Println("连接房间", roomidStr, "成功")
 		}
 	}
 }
 
+// HeartBeat 定时发送心跳包
 func HeartBeat(client *websocket.Conn) {
 	for range time.Tick(time.Second * 30) {
 		buf := GetHeader(0, 2)
@@ -194,14 +214,15 @@ func HeartBeat(client *websocket.Conn) {
 	}
 }
 
-func ConnectRoom(roomid int64) {
-	client, _, err := websocket.DefaultDialer.Dial(WsUrl, nil)
+// ConnectRoom 连接房间
+func (m Monitor) ConnectRoom() {
+	client, _, err := websocket.DefaultDialer.Dial(WsURL, nil)
 	//defer client.Close()
 	if err != nil {
 		log.Println("连接ws服务器失败", err)
 	} else {
-		key := GetToken(roomid)
-		strBody := GetBody(roomid, key)
+		key := GetToken(m.roomid)
+		strBody := m.GetBody(key)
 		strLen := uint32(len(strBody))
 		buf := GetHeader(strLen, 7)
 		b := BytesCombine(buf, []byte(strBody))
@@ -210,14 +231,15 @@ func ConnectRoom(roomid int64) {
 			log.Println("发送握手包失败", err)
 		} else {
 			go HeartBeat(client)
-			GetMsg(roomid, client)
+			m.GetMsg(client)
 		}
 	}
 }
 
+// GetToken 获取初次握手包所需的key
 func GetToken(roomid int64) string {
-	roomId := strconv.FormatInt(roomid, 10)
-	url := "https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo?id=" + roomId
+	roomID := strconv.FormatInt(roomid, 10)
+	url := "https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo?id=" + roomID
 	res, _ := http.Get(url)
 	defer res.Body.Close()
 	body, _ := ioutil.ReadAll(res.Body)
@@ -226,6 +248,7 @@ func GetToken(roomid int64) string {
 	return token
 }
 
+// GetRecommendList 获取推荐房间
 func GetRecommendList() {
 	url := "https://api.live.bilibili.com/room/v3/area/getRoomList?parent_area_id=0&area_id=0&page=1&page_size=99"
 	res, _ := http.Get(url)
@@ -235,11 +258,15 @@ func GetRecommendList() {
 	list := gjson.Get(strBody, "data.list").Array()
 	for _, v := range list {
 		roomid := v.Get("roomid").Int()
-		go ConnectRoom(roomid)
+		m := Monitor{roomid}
+		go m.ConnectRoom()
 	}
 }
 
 func main() {
-	GetRecommendList()
-	time.Sleep(time.Hour)
+	// GetRecommendList()
+	// time.Sleep(time.Hour)
+
+	m := Monitor{302816}
+	m.ConnectRoom()
 }
